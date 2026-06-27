@@ -21,6 +21,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include "nullstream-dock.h"
 
+#include <QObject>
+#include <QCursor>
 #include <QWidget>
 #include <QVBoxLayout>
 #include <QHBoxLayout>
@@ -38,7 +40,8 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 namespace {
 
-// --- widgets we need to update later (single dock instance) ---
+// --- single dock instance widgets ---
+QWidget *g_dock = nullptr;
 QListWidget *g_sceneList = nullptr;
 QComboBox *g_coverCombo = nullptr;
 QPushButton *g_coverBtn = nullptr;
@@ -49,6 +52,24 @@ std::string g_sceneBeforeCover;
 bool g_coverOn = false;
 
 const char *kOnAirSuffix = "   \u25CF ON AIR"; // "   ● ON AIR"
+
+// ---- styling ----
+const char *kStreamStartStyle = "QPushButton{background-color:#2f8f4e;color:#ffffff;font-weight:bold;"
+				"border:none;border-radius:6px;padding:10px;}"
+				"QPushButton:hover{background-color:#36a059;}"
+				"QPushButton:pressed{background-color:#287a43;}";
+const char *kStreamStopStyle = "QPushButton{background-color:#c0392b;color:#ffffff;font-weight:bold;"
+			       "border:none;border-radius:6px;padding:10px;}"
+			       "QPushButton:hover{background-color:#d0463a;}"
+			       "QPushButton:pressed{background-color:#a5301f;}";
+const char *kCoverIdleStyle = "QPushButton{background-color:#3a3f4b;color:#e7e9ee;border:1px solid #4a5160;"
+			      "border-radius:6px;padding:8px;}"
+			      "QPushButton:hover{background-color:#444b59;}";
+const char *kCoverArmedStyle = "QPushButton{background-color:#d9822b;color:#ffffff;font-weight:bold;"
+			       "border:none;border-radius:6px;padding:8px;}"
+			       "QPushButton:hover{background-color:#e6913a;}";
+const char *kSectionLabelStyle = "QLabel{color:#8b919e;font-size:10px;font-weight:bold;"
+				 "letter-spacing:1px;text-transform:uppercase;}";
 
 QStringList getSceneNames()
 {
@@ -97,6 +118,9 @@ void refreshScenes()
 	const std::string cur = currentSceneName();
 	const QString curQ = QString::fromUtf8(cur.c_str());
 
+	g_sceneList->blockSignals(true);
+	g_coverCombo->blockSignals(true);
+
 	g_sceneList->clear();
 	g_coverCombo->clear();
 
@@ -115,6 +139,9 @@ void refreshScenes()
 	const int idx = g_coverCombo->findText(keepCover);
 	if (idx >= 0)
 		g_coverCombo->setCurrentIndex(idx);
+
+	g_sceneList->blockSignals(false);
+	g_coverCombo->blockSignals(false);
 }
 
 void updateStreamButton()
@@ -122,7 +149,13 @@ void updateStreamButton()
 	if (!g_streamBtn)
 		return;
 	const bool active = obs_frontend_streaming_active();
-	g_streamBtn->setText(active ? QStringLiteral("\u25A0 配信を終了") : QStringLiteral("\u25CF 配信を開始"));
+	if (active) {
+		g_streamBtn->setText(QStringLiteral("\u25A0 配信を終了"));
+		g_streamBtn->setStyleSheet(kStreamStopStyle);
+	} else {
+		g_streamBtn->setText(QStringLiteral("\u25CF 配信を開始"));
+		g_streamBtn->setStyleSheet(kStreamStartStyle);
+	}
 }
 
 // strip the "   ● ON AIR" marker that refreshScenes() may append
@@ -135,57 +168,73 @@ QString sceneNameFromItem(const QListWidgetItem *item)
 	return text;
 }
 
+void setCoverArmed(bool armed)
+{
+	g_coverOn = armed;
+	if (!g_coverBtn)
+		return;
+	if (armed) {
+		g_coverBtn->setText(QStringLiteral("蓋絵を解除"));
+		g_coverBtn->setStyleSheet(kCoverArmedStyle);
+	} else {
+		g_coverBtn->setText(QStringLiteral("蓋絵を表示"));
+		g_coverBtn->setStyleSheet(kCoverIdleStyle);
+	}
+}
+
+QLabel *makeSectionLabel(const QString &text, QWidget *parent)
+{
+	QLabel *l = new QLabel(text, parent);
+	l->setStyleSheet(kSectionLabelStyle);
+	return l;
+}
+
 QWidget *buildDockWidget()
 {
 	QWidget *root = new QWidget();
+	root->setMinimumWidth(220);
 	QVBoxLayout *layout = new QVBoxLayout(root);
-	layout->setContentsMargins(8, 8, 8, 8);
+	layout->setContentsMargins(10, 10, 10, 10);
 	layout->setSpacing(8);
 
 	// --- stream control ---
-	g_streamBtn = new QPushButton(QStringLiteral("\u25CF 配信を開始"), root);
-	g_streamBtn->setMinimumHeight(38);
+	layout->addWidget(makeSectionLabel(QStringLiteral("配信"), root));
+	g_streamBtn = new QPushButton(root);
+	g_streamBtn->setMinimumHeight(40);
+	g_streamBtn->setCursor(Qt::PointingHandCursor);
 	layout->addWidget(g_streamBtn);
 
 	// --- cover (蓋絵) ---
-	layout->addWidget(new QLabel(QStringLiteral("蓋絵（緊急カバー）"), root));
-
+	layout->addSpacing(2);
+	layout->addWidget(makeSectionLabel(QStringLiteral("蓋絵（緊急カバー）"), root));
 	g_coverCombo = new QComboBox(root);
 	layout->addWidget(g_coverCombo);
-
-	g_coverBtn = new QPushButton(QStringLiteral("蓋絵を表示"), root);
-	g_coverBtn->setMinimumHeight(32);
+	g_coverBtn = new QPushButton(root);
+	g_coverBtn->setMinimumHeight(34);
+	g_coverBtn->setCursor(Qt::PointingHandCursor);
 	layout->addWidget(g_coverBtn);
 
 	// --- separator ---
 	QFrame *line = new QFrame(root);
 	line->setFrameShape(QFrame::HLine);
 	line->setFrameShadow(QFrame::Sunken);
+	line->setStyleSheet("color:#3a3f4b;");
+	layout->addSpacing(4);
 	layout->addWidget(line);
 
 	// --- scenes ---
-	QHBoxLayout *sceneHeader = new QHBoxLayout();
-	sceneHeader->addWidget(new QLabel(QStringLiteral("シーン"), root));
-	sceneHeader->addStretch();
-	QPushButton *refreshBtn = new QPushButton(QStringLiteral("更新"), root);
-	refreshBtn->setMaximumWidth(90);
-	sceneHeader->addWidget(refreshBtn);
-	layout->addLayout(sceneHeader);
-
+	layout->addWidget(makeSectionLabel(QStringLiteral("シーン"), root));
 	g_sceneList = new QListWidget(root);
+	g_sceneList->setStyleSheet("QListWidget{border:1px solid #3a3f4b;border-radius:6px;}"
+				   "QListWidget::item{padding:6px 8px;}"
+				   "QListWidget::item:selected{background-color:#2f6f63;color:#ffffff;}");
 	layout->addWidget(g_sceneList, 1);
 
 	// --- wiring ---
-	QObject::connect(refreshBtn, &QPushButton::clicked, root, []() {
-		refreshScenes();
-		updateStreamButton();
-	});
-
 	QObject::connect(g_sceneList, &QListWidget::itemClicked, root, [](QListWidgetItem *item) {
 		if (!item)
 			return;
 		switchToScene(sceneNameFromItem(item));
-		refreshScenes();
 	});
 
 	QObject::connect(g_streamBtn, &QPushButton::clicked, root, []() {
@@ -208,23 +257,43 @@ QWidget *buildDockWidget()
 			else
 				g_sceneBeforeCover.clear();
 			switchToScene(target);
-			g_coverOn = true;
-			g_coverBtn->setText(QStringLiteral("蓋絵を解除"));
+			setCoverArmed(true);
 		} else {
 			if (!g_sceneBeforeCover.empty())
 				switchToScene(QString::fromUtf8(g_sceneBeforeCover.c_str()));
-			g_coverOn = false;
-			g_coverBtn->setText(QStringLiteral("蓋絵を表示"));
+			setCoverArmed(false);
 		}
-		refreshScenes();
 	});
 
-	// initial fill (scene collection may not be ready yet at module load;
-	// the 更新 button re-syncs once OBS has fully started)
+	// initial state
 	refreshScenes();
 	updateStreamButton();
+	setCoverArmed(false);
 
 	return root;
+}
+
+// Frontend events -> refresh the dock on the Qt UI thread.
+void on_frontend_event(enum obs_frontend_event event, void *)
+{
+	switch (event) {
+	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+	case OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED:
+	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
+		if (g_dock)
+			QMetaObject::invokeMethod(g_dock, []() { refreshScenes(); }, Qt::QueuedConnection);
+		break;
+	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
+	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
+		if (g_dock)
+			QMetaObject::invokeMethod(g_dock, []() { updateStreamButton(); }, Qt::QueuedConnection);
+		break;
+	case OBS_FRONTEND_EVENT_EXIT:
+		g_dock = nullptr; // stop scheduling work during shutdown
+		break;
+	default:
+		break;
+	}
 }
 
 } // namespace
@@ -232,14 +301,16 @@ QWidget *buildDockWidget()
 extern "C" void nullstream_dock_load(void)
 {
 	obs_log(LOG_INFO, "[NullStreamDock] creating dock widget");
-	QWidget *dock = buildDockWidget();
-	obs_frontend_add_dock_by_id("nullstream_dock", "NullStreamDock", dock);
+	g_dock = buildDockWidget();
+	obs_frontend_add_dock_by_id("nullstream_dock", "NullStreamDock", g_dock);
+	obs_frontend_add_event_callback(on_frontend_event, nullptr);
 	obs_log(LOG_INFO, "[NullStreamDock] dock registered");
 }
 
 extern "C" void nullstream_dock_unload(void)
 {
-	// OBS owns the dock widget once registered; nothing to free here.
+	obs_frontend_remove_event_callback(on_frontend_event, nullptr);
+	g_dock = nullptr;
 	g_sceneList = nullptr;
 	g_coverCombo = nullptr;
 	g_coverBtn = nullptr;
