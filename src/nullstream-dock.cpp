@@ -19,6 +19,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <obs-module.h>
 #include <obs-frontend-api.h>
 #include <plugin-support.h>
+#include <util/platform.h>
 #include "nullstream-dock.h"
 
 #include <QObject>
@@ -35,8 +36,11 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QFont>
 #include <QString>
 #include <QStringList>
+#include <QInputDialog>
+#include <QLineEdit>
 
 #include <string>
+#include <vector>
 
 namespace {
 
@@ -46,10 +50,19 @@ QListWidget *g_sceneList = nullptr;
 QComboBox *g_coverCombo = nullptr;
 QPushButton *g_coverBtn = nullptr;
 QPushButton *g_streamBtn = nullptr;
+QListWidget *g_presetList = nullptr;
 
 // --- cover (蓋絵) state ---
 std::string g_sceneBeforeCover;
 bool g_coverOn = false;
+
+// --- presets ---
+struct Preset {
+	std::string name;
+	std::string scene;
+	std::string cover;
+};
+std::vector<Preset> g_presets;
 
 const char *kOnAirSuffix = "   \u25CF ON AIR"; // "   ● ON AIR"
 
@@ -70,6 +83,12 @@ const char *kCoverArmedStyle = "QPushButton{background-color:#d9822b;color:#ffff
 			       "QPushButton:hover{background-color:#e6913a;}";
 const char *kSectionLabelStyle = "QLabel{color:#8b919e;font-size:10px;font-weight:bold;"
 				 "letter-spacing:1px;text-transform:uppercase;}";
+const char *kSmallBtnStyle = "QPushButton{background-color:#3a3f4b;color:#e7e9ee;border:1px solid #4a5160;"
+			     "border-radius:5px;padding:5px;}"
+			     "QPushButton:hover{background-color:#444b59;}";
+const char *kListStyle = "QListWidget{border:1px solid #3a3f4b;border-radius:6px;}"
+			 "QListWidget::item{padding:6px 8px;}"
+			 "QListWidget::item:selected{background-color:#2f6f63;color:#ffffff;}";
 
 QStringList getSceneNames()
 {
@@ -182,6 +201,120 @@ void setCoverArmed(bool armed)
 	}
 }
 
+// ---------------- presets ----------------
+
+void savePresets()
+{
+	obs_data_t *root = obs_data_create();
+	obs_data_array_t *arr = obs_data_array_create();
+	for (const Preset &p : g_presets) {
+		obs_data_t *o = obs_data_create();
+		obs_data_set_string(o, "name", p.name.c_str());
+		obs_data_set_string(o, "scene", p.scene.c_str());
+		obs_data_set_string(o, "cover", p.cover.c_str());
+		obs_data_array_push_back(arr, o);
+		obs_data_release(o);
+	}
+	obs_data_set_array(root, "presets", arr);
+
+	char *dir = obs_module_config_path("");
+	if (dir) {
+		os_mkdirs(dir);
+		bfree(dir);
+	}
+	char *path = obs_module_config_path("presets.json");
+	if (path) {
+		obs_data_save_json(root, path);
+		bfree(path);
+	}
+
+	obs_data_array_release(arr);
+	obs_data_release(root);
+}
+
+void loadPresets()
+{
+	g_presets.clear();
+	char *path = obs_module_config_path("presets.json");
+	if (!path)
+		return;
+	obs_data_t *root = obs_data_create_from_json_file(path);
+	bfree(path);
+	if (!root)
+		return;
+
+	obs_data_array_t *arr = obs_data_get_array(root, "presets");
+	if (arr) {
+		const size_t n = obs_data_array_count(arr);
+		for (size_t i = 0; i < n; i++) {
+			obs_data_t *o = obs_data_array_item(arr, i);
+			Preset p;
+			p.name = obs_data_get_string(o, "name");
+			p.scene = obs_data_get_string(o, "scene");
+			p.cover = obs_data_get_string(o, "cover");
+			if (!p.name.empty())
+				g_presets.push_back(p);
+			obs_data_release(o);
+		}
+		obs_data_array_release(arr);
+	}
+	obs_data_release(root);
+}
+
+void refreshPresetList()
+{
+	if (!g_presetList)
+		return;
+	g_presetList->clear();
+	for (const Preset &p : g_presets)
+		g_presetList->addItem(QString::fromUtf8(p.name.c_str()));
+}
+
+void applyPreset(int row)
+{
+	if (row < 0 || row >= static_cast<int>(g_presets.size()))
+		return;
+	const Preset &p = g_presets[static_cast<size_t>(row)];
+	if (!p.scene.empty())
+		switchToScene(QString::fromUtf8(p.scene.c_str()));
+	if (!p.cover.empty() && g_coverCombo) {
+		const int idx = g_coverCombo->findText(QString::fromUtf8(p.cover.c_str()));
+		if (idx >= 0)
+			g_coverCombo->setCurrentIndex(idx);
+	}
+}
+
+void saveCurrentAsPreset()
+{
+	bool ok = false;
+	const QString name = QInputDialog::getText(g_dock, QStringLiteral("プリセット保存"),
+						   QStringLiteral("プリセット名:"), QLineEdit::Normal, QString(), &ok);
+	if (!ok || name.trimmed().isEmpty())
+		return;
+
+	Preset p;
+	p.name = name.trimmed().toUtf8().constData();
+	p.scene = currentSceneName();
+	p.cover = g_coverCombo ? g_coverCombo->currentText().toUtf8().constData() : "";
+	g_presets.push_back(p);
+	savePresets();
+	refreshPresetList();
+}
+
+void deleteSelectedPreset()
+{
+	if (!g_presetList)
+		return;
+	const int row = g_presetList->currentRow();
+	if (row < 0 || row >= static_cast<int>(g_presets.size()))
+		return;
+	g_presets.erase(g_presets.begin() + row);
+	savePresets();
+	refreshPresetList();
+}
+
+// ---------------- UI ----------------
+
 QLabel *makeSectionLabel(const QString &text, QWidget *parent)
 {
 	QLabel *l = new QLabel(text, parent);
@@ -204,6 +337,27 @@ QWidget *buildDockWidget()
 	g_streamBtn->setCursor(Qt::PointingHandCursor);
 	layout->addWidget(g_streamBtn);
 
+	// --- presets ---
+	layout->addSpacing(2);
+	layout->addWidget(makeSectionLabel(QStringLiteral("プリセット"), root));
+	g_presetList = new QListWidget(root);
+	g_presetList->setStyleSheet(kListStyle);
+	g_presetList->setMaximumHeight(120);
+	layout->addWidget(g_presetList);
+
+	QHBoxLayout *presetBtns = new QHBoxLayout();
+	QPushButton *savePresetBtn = new QPushButton(QStringLiteral("＋ 現在を保存"), root);
+	QPushButton *applyPresetBtn = new QPushButton(QStringLiteral("適用"), root);
+	QPushButton *delPresetBtn = new QPushButton(QStringLiteral("削除"), root);
+	for (QPushButton *b : {savePresetBtn, applyPresetBtn, delPresetBtn}) {
+		b->setStyleSheet(kSmallBtnStyle);
+		b->setCursor(Qt::PointingHandCursor);
+	}
+	presetBtns->addWidget(savePresetBtn);
+	presetBtns->addWidget(applyPresetBtn);
+	presetBtns->addWidget(delPresetBtn);
+	layout->addLayout(presetBtns);
+
 	// --- cover (蓋絵) ---
 	layout->addSpacing(2);
 	layout->addWidget(makeSectionLabel(QStringLiteral("蓋絵（緊急カバー）"), root));
@@ -225,18 +379,17 @@ QWidget *buildDockWidget()
 	// --- scenes ---
 	layout->addWidget(makeSectionLabel(QStringLiteral("シーン"), root));
 	g_sceneList = new QListWidget(root);
-	g_sceneList->setStyleSheet("QListWidget{border:1px solid #3a3f4b;border-radius:6px;}"
-				   "QListWidget::item{padding:6px 8px;}"
-				   "QListWidget::item:selected{background-color:#2f6f63;color:#ffffff;}");
+	g_sceneList->setStyleSheet(kListStyle);
 	layout->addWidget(g_sceneList, 1);
 
-	// --- wiring ---
+	// --- wiring: scenes ---
 	QObject::connect(g_sceneList, &QListWidget::itemClicked, root, [](QListWidgetItem *item) {
 		if (!item)
 			return;
 		switchToScene(sceneNameFromItem(item));
 	});
 
+	// --- wiring: stream ---
 	QObject::connect(g_streamBtn, &QPushButton::clicked, root, []() {
 		if (obs_frontend_streaming_active())
 			obs_frontend_streaming_stop();
@@ -245,6 +398,7 @@ QWidget *buildDockWidget()
 		updateStreamButton();
 	});
 
+	// --- wiring: cover ---
 	QObject::connect(g_coverBtn, &QPushButton::clicked, root, []() {
 		if (!g_coverOn) {
 			const QString target = g_coverCombo->currentText();
@@ -265,7 +419,21 @@ QWidget *buildDockWidget()
 		}
 	});
 
-	// initial state
+	// --- wiring: presets ---
+	QObject::connect(savePresetBtn, &QPushButton::clicked, root, []() { saveCurrentAsPreset(); });
+	QObject::connect(applyPresetBtn, &QPushButton::clicked, root, []() {
+		if (g_presetList)
+			applyPreset(g_presetList->currentRow());
+	});
+	QObject::connect(delPresetBtn, &QPushButton::clicked, root, []() { deleteSelectedPreset(); });
+	QObject::connect(g_presetList, &QListWidget::itemDoubleClicked, root, [](QListWidgetItem *) {
+		if (g_presetList)
+			applyPreset(g_presetList->currentRow());
+	});
+
+	// --- initial state ---
+	loadPresets();
+	refreshPresetList();
 	refreshScenes();
 	updateStreamButton();
 	setCoverArmed(false);
@@ -315,4 +483,5 @@ extern "C" void nullstream_dock_unload(void)
 	g_coverCombo = nullptr;
 	g_coverBtn = nullptr;
 	g_streamBtn = nullptr;
+	g_presetList = nullptr;
 }
