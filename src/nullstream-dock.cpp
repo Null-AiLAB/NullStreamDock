@@ -21,6 +21,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <plugin-support.h>
 #include <util/platform.h>
 #include "nullstream-dock.h"
+#include "preview-widget.hpp"
 
 #include <QObject>
 #include <QCursor>
@@ -329,6 +330,12 @@ QWidget *buildDockWidget()
 	QVBoxLayout *layout = new QVBoxLayout(root);
 	layout->setContentsMargins(10, 10, 10, 10);
 	layout->setSpacing(8);
+
+	// --- preview (horizontal program output) ---
+	layout->addWidget(makeSectionLabel(QStringLiteral("プレビュー"), root));
+	PreviewWidget *preview = new PreviewWidget(root);
+	preview->setMinimumHeight(140);
+	layout->addWidget(preview);
 
 	// --- stream control ---
 	layout->addWidget(makeSectionLabel(QStringLiteral("配信"), root));
