@@ -34,6 +34,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QListWidgetItem>
 #include <QLabel>
 #include <QFrame>
+#include <QSplitter>
 #include <QFont>
 #include <QString>
 #include <QStringList>
@@ -323,81 +324,68 @@ QLabel *makeSectionLabel(const QString &text, QWidget *parent)
 	return l;
 }
 
-QWidget *buildDockWidget()
+// Wrap content in a titled "card" panel.
+QWidget *makePanel(const QString &title, QWidget *content)
 {
-	QWidget *root = new QWidget();
-	root->setMinimumWidth(220);
-	QVBoxLayout *layout = new QVBoxLayout(root);
-	layout->setContentsMargins(10, 10, 10, 10);
-	layout->setSpacing(8);
+	QFrame *frame = new QFrame();
+	frame->setObjectName("nsdPanel");
+	frame->setStyleSheet("QFrame#nsdPanel{background:#262a33;border-radius:8px;}");
+	QVBoxLayout *l = new QVBoxLayout(frame);
+	l->setContentsMargins(8, 6, 8, 8);
+	l->setSpacing(6);
+	l->addWidget(makeSectionLabel(title, frame));
+	l->addWidget(content, 1);
+	return frame;
+}
 
-	// --- preview (horizontal program output) ---
-	layout->addWidget(makeSectionLabel(QStringLiteral("プレビュー"), root));
-	PreviewWidget *preview = new PreviewWidget(root);
-	preview->setMinimumHeight(140);
-	layout->addWidget(preview);
+// A "coming soon" placeholder for modules not built yet.
+QWidget *makePlaceholder(const QString &note)
+{
+	QLabel *l = new QLabel(note);
+	l->setAlignment(Qt::AlignCenter);
+	l->setWordWrap(true);
+	l->setMinimumHeight(70);
+	l->setStyleSheet("QLabel{color:#6b7280;border:1px dashed #3a3f4b;"
+			 "border-radius:6px;padding:10px;}");
+	return l;
+}
 
-	// --- stream control ---
-	layout->addWidget(makeSectionLabel(QStringLiteral("配信"), root));
-	g_streamBtn = new QPushButton(root);
+// --- top row panels ---
+
+QWidget *makeVerticalPanel()
+{
+	return makePanel(QStringLiteral("縦配信画面（切替可）"),
+			 makePlaceholder(QStringLiteral("縦プレビュー\n（これから・合成方法は相談中）")));
+}
+
+QWidget *makeMainPreviewPanel()
+{
+	PreviewWidget *preview = new PreviewWidget();
+	preview->setMinimumSize(160, 90);
+	return makePanel(QStringLiteral("メイン配信画面"), preview);
+}
+
+QWidget *makeCommentsPanel()
+{
+	return makePanel(QStringLiteral("統合コメント欄"),
+			 makePlaceholder(QStringLiteral("統合コメント\n（これから）")));
+}
+
+// --- bottom row panels ---
+
+QWidget *makeControlPanel()
+{
+	QWidget *w = new QWidget();
+	QVBoxLayout *l = new QVBoxLayout(w);
+	l->setContentsMargins(0, 0, 0, 0);
+	l->setSpacing(8);
+
+	// stream start/stop
+	g_streamBtn = new QPushButton(w);
 	g_streamBtn->setMinimumHeight(40);
 	g_streamBtn->setCursor(Qt::PointingHandCursor);
-	layout->addWidget(g_streamBtn);
-
-	// --- presets ---
-	layout->addSpacing(2);
-	layout->addWidget(makeSectionLabel(QStringLiteral("プリセット"), root));
-	g_presetList = new QListWidget(root);
-	g_presetList->setStyleSheet(kListStyle);
-	g_presetList->setMaximumHeight(120);
-	layout->addWidget(g_presetList);
-
-	QHBoxLayout *presetBtns = new QHBoxLayout();
-	QPushButton *savePresetBtn = new QPushButton(QStringLiteral("＋ 現在を保存"), root);
-	QPushButton *applyPresetBtn = new QPushButton(QStringLiteral("適用"), root);
-	QPushButton *delPresetBtn = new QPushButton(QStringLiteral("削除"), root);
-	for (QPushButton *b : {savePresetBtn, applyPresetBtn, delPresetBtn}) {
-		b->setStyleSheet(kSmallBtnStyle);
-		b->setCursor(Qt::PointingHandCursor);
-	}
-	presetBtns->addWidget(savePresetBtn);
-	presetBtns->addWidget(applyPresetBtn);
-	presetBtns->addWidget(delPresetBtn);
-	layout->addLayout(presetBtns);
-
-	// --- cover (蓋絵) ---
-	layout->addSpacing(2);
-	layout->addWidget(makeSectionLabel(QStringLiteral("蓋絵（緊急カバー）"), root));
-	g_coverCombo = new QComboBox(root);
-	layout->addWidget(g_coverCombo);
-	g_coverBtn = new QPushButton(root);
-	g_coverBtn->setMinimumHeight(34);
-	g_coverBtn->setCursor(Qt::PointingHandCursor);
-	layout->addWidget(g_coverBtn);
-
-	// --- separator ---
-	QFrame *line = new QFrame(root);
-	line->setFrameShape(QFrame::HLine);
-	line->setFrameShadow(QFrame::Sunken);
-	line->setStyleSheet("color:#3a3f4b;");
-	layout->addSpacing(4);
-	layout->addWidget(line);
-
-	// --- scenes ---
-	layout->addWidget(makeSectionLabel(QStringLiteral("シーン"), root));
-	g_sceneList = new QListWidget(root);
-	g_sceneList->setStyleSheet(kListStyle);
-	layout->addWidget(g_sceneList, 1);
-
-	// --- wiring: scenes ---
-	QObject::connect(g_sceneList, &QListWidget::itemClicked, root, [](QListWidgetItem *item) {
-		if (!item)
-			return;
-		switchToScene(sceneNameFromItem(item));
-	});
-
-	// --- wiring: stream ---
-	QObject::connect(g_streamBtn, &QPushButton::clicked, root, []() {
+	l->addWidget(g_streamBtn);
+	QObject::connect(g_streamBtn, &QPushButton::clicked, g_streamBtn, []() {
 		if (obs_frontend_streaming_active())
 			obs_frontend_streaming_stop();
 		else
@@ -405,8 +393,45 @@ QWidget *buildDockWidget()
 		updateStreamButton();
 	});
 
-	// --- wiring: cover ---
-	QObject::connect(g_coverBtn, &QPushButton::clicked, root, []() {
+	// presets
+	l->addWidget(makeSectionLabel(QStringLiteral("プリセット"), w));
+	g_presetList = new QListWidget(w);
+	g_presetList->setStyleSheet(kListStyle);
+	g_presetList->setMaximumHeight(110);
+	l->addWidget(g_presetList);
+
+	QHBoxLayout *presetBtns = new QHBoxLayout();
+	QPushButton *savePresetBtn = new QPushButton(QStringLiteral("＋ 現在を保存"), w);
+	QPushButton *applyPresetBtn = new QPushButton(QStringLiteral("適用"), w);
+	QPushButton *delPresetBtn = new QPushButton(QStringLiteral("削除"), w);
+	for (QPushButton *b : {savePresetBtn, applyPresetBtn, delPresetBtn}) {
+		b->setStyleSheet(kSmallBtnStyle);
+		b->setCursor(Qt::PointingHandCursor);
+	}
+	presetBtns->addWidget(savePresetBtn);
+	presetBtns->addWidget(applyPresetBtn);
+	presetBtns->addWidget(delPresetBtn);
+	l->addLayout(presetBtns);
+	QObject::connect(savePresetBtn, &QPushButton::clicked, savePresetBtn, []() { saveCurrentAsPreset(); });
+	QObject::connect(applyPresetBtn, &QPushButton::clicked, applyPresetBtn, []() {
+		if (g_presetList)
+			applyPreset(g_presetList->currentRow());
+	});
+	QObject::connect(delPresetBtn, &QPushButton::clicked, delPresetBtn, []() { deleteSelectedPreset(); });
+	QObject::connect(g_presetList, &QListWidget::itemDoubleClicked, g_presetList, [](QListWidgetItem *) {
+		if (g_presetList)
+			applyPreset(g_presetList->currentRow());
+	});
+
+	// cover (蓋絵)
+	l->addWidget(makeSectionLabel(QStringLiteral("蓋絵（緊急カバー）"), w));
+	g_coverCombo = new QComboBox(w);
+	l->addWidget(g_coverCombo);
+	g_coverBtn = new QPushButton(w);
+	g_coverBtn->setMinimumHeight(32);
+	g_coverBtn->setCursor(Qt::PointingHandCursor);
+	l->addWidget(g_coverBtn);
+	QObject::connect(g_coverBtn, &QPushButton::clicked, g_coverBtn, []() {
 		if (!g_coverOn) {
 			const QString target = g_coverCombo->currentText();
 			if (target.isEmpty())
@@ -426,19 +451,73 @@ QWidget *buildDockWidget()
 		}
 	});
 
-	// --- wiring: presets ---
-	QObject::connect(savePresetBtn, &QPushButton::clicked, root, []() { saveCurrentAsPreset(); });
-	QObject::connect(applyPresetBtn, &QPushButton::clicked, root, []() {
-		if (g_presetList)
-			applyPreset(g_presetList->currentRow());
-	});
-	QObject::connect(delPresetBtn, &QPushButton::clicked, root, []() { deleteSelectedPreset(); });
-	QObject::connect(g_presetList, &QListWidget::itemDoubleClicked, root, [](QListWidgetItem *) {
-		if (g_presetList)
-			applyPreset(g_presetList->currentRow());
+	l->addStretch(1);
+	return makePanel(QStringLiteral("配信コントロール"), w);
+}
+
+QWidget *makeScenesPanel()
+{
+	QWidget *w = new QWidget();
+	QVBoxLayout *l = new QVBoxLayout(w);
+	l->setContentsMargins(0, 0, 0, 0);
+	l->setSpacing(6);
+
+	l->addWidget(makeSectionLabel(QStringLiteral("シーン"), w));
+	g_sceneList = new QListWidget(w);
+	g_sceneList->setStyleSheet(kListStyle);
+	l->addWidget(g_sceneList, 1);
+	QObject::connect(g_sceneList, &QListWidget::itemClicked, g_sceneList, [](QListWidgetItem *item) {
+		if (!item)
+			return;
+		switchToScene(sceneNameFromItem(item));
 	});
 
-	// --- initial state ---
+	l->addWidget(makeSectionLabel(QStringLiteral("ソース"), w));
+	l->addWidget(makePlaceholder(QStringLiteral("ソース欄（次に作ります）")));
+
+	return makePanel(QStringLiteral("シーン & ソース"), w);
+}
+
+QWidget *makeMixerPanel()
+{
+	return makePanel(QStringLiteral("音量ミキサー"), makePlaceholder(QStringLiteral("音量ミキサー\n（これから）")));
+}
+
+QWidget *buildDockWidget()
+{
+	QWidget *root = new QWidget();
+	root->setMinimumSize(360, 280);
+	QVBoxLayout *rootLayout = new QVBoxLayout(root);
+	rootLayout->setContentsMargins(6, 6, 6, 6);
+
+	QSplitter *outer = new QSplitter(Qt::Vertical, root);
+	QSplitter *topRow = new QSplitter(Qt::Horizontal, outer);
+	QSplitter *botRow = new QSplitter(Qt::Horizontal, outer);
+
+	// top row: 縦 | メイン | コメント
+	topRow->addWidget(makeVerticalPanel());
+	topRow->addWidget(makeMainPreviewPanel());
+	topRow->addWidget(makeCommentsPanel());
+	topRow->setStretchFactor(0, 2);
+	topRow->setStretchFactor(1, 5);
+	topRow->setStretchFactor(2, 3);
+
+	// bottom row: コントロール | シーン&ソース | ミキサー
+	botRow->addWidget(makeControlPanel());
+	botRow->addWidget(makeScenesPanel());
+	botRow->addWidget(makeMixerPanel());
+	botRow->setStretchFactor(0, 2);
+	botRow->setStretchFactor(1, 3);
+	botRow->setStretchFactor(2, 4);
+
+	outer->addWidget(topRow);
+	outer->addWidget(botRow);
+	outer->setStretchFactor(0, 5);
+	outer->setStretchFactor(1, 4);
+
+	rootLayout->addWidget(outer);
+
+	// initial state
 	loadPresets();
 	refreshPresetList();
 	refreshScenes();
