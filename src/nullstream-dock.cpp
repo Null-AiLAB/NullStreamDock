@@ -53,6 +53,7 @@ QComboBox *g_coverCombo = nullptr;
 QPushButton *g_coverBtn = nullptr;
 QPushButton *g_streamBtn = nullptr;
 QListWidget *g_presetList = nullptr;
+QListWidget *g_sourceList = nullptr;
 
 // --- cover (蓋絵) state ---
 std::string g_sceneBeforeCover;
@@ -129,6 +130,81 @@ void switchToScene(const QString &qname)
 	}
 }
 
+// ---------------- sources (current scene) ----------------
+
+struct SourceRow {
+	std::string name;
+	bool visible;
+};
+
+bool collectSceneItem(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *rows = static_cast<std::vector<SourceRow> *>(param);
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	if (src) {
+		const char *n = obs_source_get_name(src);
+		if (n)
+			rows->push_back({std::string(n), obs_sceneitem_visible(item)});
+	}
+	return true;
+}
+
+void refreshSources()
+{
+	if (!g_sourceList)
+		return;
+
+	std::vector<SourceRow> rows;
+	obs_source_t *sceneSrc = obs_frontend_get_current_scene();
+	if (sceneSrc) {
+		obs_scene_t *scene = obs_scene_from_source(sceneSrc);
+		if (scene)
+			obs_scene_enum_items(scene, collectSceneItem, &rows);
+		obs_source_release(sceneSrc);
+	}
+
+	g_sourceList->blockSignals(true);
+	g_sourceList->clear();
+	for (const SourceRow &r : rows) {
+		QListWidgetItem *item = new QListWidgetItem(QString::fromUtf8(r.name.c_str()), g_sourceList);
+		item->setFlags(item->flags() | Qt::ItemIsUserCheckable);
+		item->setCheckState(r.visible ? Qt::Checked : Qt::Unchecked);
+	}
+	g_sourceList->blockSignals(false);
+}
+
+struct SetVisReq {
+	std::string name;
+	bool visible;
+};
+
+bool setVisCb(obs_scene_t *, obs_sceneitem_t *item, void *param)
+{
+	auto *req = static_cast<SetVisReq *>(param);
+	obs_source_t *src = obs_sceneitem_get_source(item);
+	if (src) {
+		const char *n = obs_source_get_name(src);
+		if (n && req->name == n) {
+			obs_sceneitem_set_visible(item, req->visible);
+			return false;
+		}
+	}
+	return true;
+}
+
+void setSourceVisibleByName(const std::string &name, bool visible)
+{
+	obs_source_t *sceneSrc = obs_frontend_get_current_scene();
+	if (!sceneSrc)
+		return;
+	obs_scene_t *scene = obs_scene_from_source(sceneSrc);
+	if (scene) {
+		SetVisReq req{name, visible};
+		obs_scene_enum_items(scene, setVisCb, &req);
+	}
+	obs_source_release(sceneSrc);
+}
+
 void refreshScenes()
 {
 	if (!g_sceneList || !g_coverCombo)
@@ -163,6 +239,8 @@ void refreshScenes()
 
 	g_sceneList->blockSignals(false);
 	g_coverCombo->blockSignals(false);
+
+	refreshSources();
 }
 
 void updateStreamButton()
@@ -473,7 +551,16 @@ QWidget *makeScenesPanel()
 	});
 
 	l->addWidget(makeSectionLabel(QStringLiteral("ソース"), w));
-	l->addWidget(makePlaceholder(QStringLiteral("ソース欄（次に作ります）")));
+	g_sourceList = new QListWidget(w);
+	g_sourceList->setStyleSheet(kListStyle);
+	l->addWidget(g_sourceList, 1);
+	QObject::connect(g_sourceList, &QListWidget::itemChanged, g_sourceList, [](QListWidgetItem *item) {
+		if (!item)
+			return;
+		const std::string name = item->text().toUtf8().constData();
+		const bool visible = (item->checkState() == Qt::Checked);
+		setSourceVisibleByName(name, visible);
+	});
 
 	return makePanel(QStringLiteral("シーン & ソース"), w);
 }
@@ -570,4 +657,5 @@ extern "C" void nullstream_dock_unload(void)
 	g_coverBtn = nullptr;
 	g_streamBtn = nullptr;
 	g_presetList = nullptr;
+	g_sourceList = nullptr;
 }
