@@ -35,6 +35,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 #include <QLabel>
 #include <QFrame>
 #include <QSplitter>
+#include <QSlider>
 #include <QFont>
 #include <QString>
 #include <QStringList>
@@ -43,6 +44,7 @@ with this program. If not, see <https://www.gnu.org/licenses/>
 
 #include <string>
 #include <vector>
+#include <cmath>
 
 namespace {
 
@@ -54,6 +56,7 @@ QPushButton *g_coverBtn = nullptr;
 QPushButton *g_streamBtn = nullptr;
 QListWidget *g_presetList = nullptr;
 QListWidget *g_sourceList = nullptr;
+QVBoxLayout *g_mixerLayout = nullptr;
 
 // --- cover (蓋絵) state ---
 std::string g_sceneBeforeCover;
@@ -92,6 +95,12 @@ const char *kSmallBtnStyle = "QPushButton{background-color:#3a3f4b;color:#e7e9ee
 const char *kListStyle = "QListWidget{border:1px solid #3a3f4b;border-radius:6px;}"
 			 "QListWidget::item{padding:6px 8px;}"
 			 "QListWidget::item:selected{background-color:#2f6f63;color:#ffffff;}";
+const char *kMuteOffStyle = "QPushButton{background:#3a3f4b;color:#e7e9ee;border:1px solid #4a5160;"
+			    "border-radius:4px;padding:3px 10px;}"
+			    "QPushButton:hover{background:#444b59;}";
+const char *kMuteOnStyle = "QPushButton{background:#c0392b;color:#ffffff;border:none;"
+			   "border-radius:4px;padding:3px 10px;}"
+			   "QPushButton:hover{background:#d0463a;}";
 
 QStringList getSceneNames()
 {
@@ -565,9 +574,118 @@ QWidget *makeScenesPanel()
 	return makePanel(QStringLiteral("シーン & ソース"), w);
 }
 
+// ---------------- audio mixer ----------------
+
+int volToSlider(float mul)
+{
+	if (mul <= 0.0f)
+		return 0;
+	double db = 20.0 * std::log10(static_cast<double>(mul));
+	if (db < -60.0)
+		db = -60.0;
+	if (db > 0.0)
+		db = 0.0;
+	return static_cast<int>((db + 60.0) * 100.0 / 60.0 + 0.5);
+}
+
+float sliderToVol(int val)
+{
+	if (val <= 0)
+		return 0.0f;
+	double db = -60.0 + static_cast<double>(val) * 60.0 / 100.0;
+	return static_cast<float>(std::pow(10.0, db / 20.0));
+}
+
+struct AudioRow {
+	std::string name;
+	float vol;
+	bool muted;
+};
+
+bool collectAudioSource(void *param, obs_source_t *source)
+{
+	const uint32_t flags = obs_source_get_output_flags(source);
+	if (flags & OBS_SOURCE_AUDIO) {
+		auto *rows = static_cast<std::vector<AudioRow> *>(param);
+		const char *n = obs_source_get_name(source);
+		if (n)
+			rows->push_back({std::string(n), obs_source_get_volume(source), obs_source_muted(source)});
+	}
+	return true;
+}
+
+QWidget *makeMixerRow(const std::string &name, float volMul, bool muted)
+{
+	QWidget *row = new QWidget();
+	QVBoxLayout *rl = new QVBoxLayout(row);
+	rl->setContentsMargins(0, 2, 0, 2);
+	rl->setSpacing(3);
+
+	QHBoxLayout *top = new QHBoxLayout();
+	QLabel *nameL = new QLabel(QString::fromUtf8(name.c_str()), row);
+	nameL->setStyleSheet("QLabel{color:#e7e9ee;}");
+	QPushButton *muteBtn = new QPushButton(row);
+	muteBtn->setCheckable(true);
+	muteBtn->setChecked(muted);
+	muteBtn->setCursor(Qt::PointingHandCursor);
+	muteBtn->setText(muted ? QStringLiteral("ミュート中") : QStringLiteral("ミュート"));
+	muteBtn->setStyleSheet(muted ? kMuteOnStyle : kMuteOffStyle);
+	top->addWidget(nameL, 1);
+	top->addWidget(muteBtn);
+	rl->addLayout(top);
+
+	QSlider *slider = new QSlider(Qt::Horizontal, row);
+	slider->setRange(0, 100);
+	slider->setValue(volToSlider(volMul));
+	rl->addWidget(slider);
+
+	QObject::connect(slider, &QSlider::valueChanged, slider, [name](int val) {
+		obs_source_t *s = obs_get_source_by_name(name.c_str());
+		if (s) {
+			obs_source_set_volume(s, sliderToVol(val));
+			obs_source_release(s);
+		}
+	});
+	QObject::connect(muteBtn, &QPushButton::toggled, muteBtn, [name, muteBtn](bool checked) {
+		obs_source_t *s = obs_get_source_by_name(name.c_str());
+		if (s) {
+			obs_source_set_muted(s, checked);
+			obs_source_release(s);
+		}
+		muteBtn->setText(checked ? QStringLiteral("ミュート中") : QStringLiteral("ミュート"));
+		muteBtn->setStyleSheet(checked ? kMuteOnStyle : kMuteOffStyle);
+	});
+
+	return row;
+}
+
+void rebuildMixer()
+{
+	if (!g_mixerLayout)
+		return;
+
+	QLayoutItem *item;
+	while ((item = g_mixerLayout->takeAt(0)) != nullptr) {
+		if (item->widget())
+			item->widget()->deleteLater();
+		delete item;
+	}
+
+	std::vector<AudioRow> rows;
+	obs_enum_sources(collectAudioSource, &rows);
+	for (const AudioRow &r : rows)
+		g_mixerLayout->addWidget(makeMixerRow(r.name, r.vol, r.muted));
+	g_mixerLayout->addStretch(1);
+}
+
 QWidget *makeMixerPanel()
 {
-	return makePanel(QStringLiteral("音量ミキサー"), makePlaceholder(QStringLiteral("音量ミキサー\n（これから）")));
+	QWidget *w = new QWidget();
+	g_mixerLayout = new QVBoxLayout(w);
+	g_mixerLayout->setContentsMargins(0, 0, 0, 0);
+	g_mixerLayout->setSpacing(6);
+	rebuildMixer();
+	return makePanel(QStringLiteral("音量ミキサー"), w);
 }
 
 QWidget *buildDockWidget()
@@ -619,10 +737,19 @@ void on_frontend_event(enum obs_frontend_event event, void *)
 {
 	switch (event) {
 	case OBS_FRONTEND_EVENT_SCENE_CHANGED:
+		if (g_dock)
+			QMetaObject::invokeMethod(g_dock, []() { refreshScenes(); }, Qt::QueuedConnection);
+		break;
 	case OBS_FRONTEND_EVENT_SCENE_LIST_CHANGED:
 	case OBS_FRONTEND_EVENT_FINISHED_LOADING:
 		if (g_dock)
-			QMetaObject::invokeMethod(g_dock, []() { refreshScenes(); }, Qt::QueuedConnection);
+			QMetaObject::invokeMethod(
+				g_dock,
+				[]() {
+					refreshScenes();
+					rebuildMixer();
+				},
+				Qt::QueuedConnection);
 		break;
 	case OBS_FRONTEND_EVENT_STREAMING_STARTED:
 	case OBS_FRONTEND_EVENT_STREAMING_STOPPED:
@@ -658,4 +785,5 @@ extern "C" void nullstream_dock_unload(void)
 	g_streamBtn = nullptr;
 	g_presetList = nullptr;
 	g_sourceList = nullptr;
+	g_mixerLayout = nullptr;
 }
